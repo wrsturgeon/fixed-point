@@ -13,7 +13,9 @@ extern "C" {
 }
 
 #ifndef FP_NOSTR
+#include <iomanip>      // for std::fixed
 #include <iostream>     // for std::string, std::__1::operator<<, std::ostream
+#include <sstream>      // for std::stringstream
 #include <string>       // for std::allocator, std::operator+, std::char_traits, std::basic_string, std::to_string
 #else // FP_NOSTR
 #if FP_NOSTR != 1
@@ -56,20 +58,31 @@ FP_PURE std::size_t byte_pow2_ceil(std::unsigned_integral auto x) noexcept {
   return c;
 }
 
-static_assert(byte_pow2_ceil(8U) == 8U, "As of now, this fixed-point library works only with a byte size of 8.");
+static_assert(byte_pow2_ceil(8U) == 8U, "As of now, this fixed-point library requires an 8-bit system byte.");
 
 template <typename T> using signedness = std::conditional_t<std::is_signed_v<T>, signed, unsigned>;
+
+FP_PURE std::uint8_t dec_capacity(std::uint8_t bin_capacity) noexcept {
+  std::size_t const total = (static_cast<std::size_t>(1) << bin_capacity);
+  std::uint8_t d = 0;
+  std::size_t exp = 10;
+  while (total > exp) { ++d; exp *= 10; }
+  return d;
+}
 
 } // namespace util
 
 template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
 struct t {
   util::int_b<B, S> internal; // NOLINT(misc-non-private-member-variables-in-classes)
+  static constexpr int fractional_bits = B - I - std::is_signed_v<S>;
+  static constexpr std::uint8_t total_decimal = util::dec_capacity(B);
+  static constexpr std::uint8_t fract_decimal = util::dec_capacity(fractional_bits);
   // no constructor
-  FP_IMPURE explicit operator float() const noexcept requires (static_cast<int>(I) == I) { return std::ldexpf(static_cast<float>(internal), static_cast<int>(I)); }
-  FP_IMPURE explicit operator double() const noexcept requires (static_cast<int>(I) == I) { return std::ldexp(static_cast<double>(internal), static_cast<int>(I)); }
+  FP_IMPURE explicit operator float() const noexcept requires (static_cast<int>(I) == I) { return std::ldexpf(static_cast<float>(internal), static_cast<int>(-fractional_bits)); }
+  FP_IMPURE explicit operator double() const noexcept requires (static_cast<int>(I) == I) { return std::ldexp(static_cast<double>(internal), static_cast<int>(-fractional_bits)); }
 #ifndef FP_NOSTR
-  FP_IMPURE explicit operator std::string() const noexcept { return std::to_string(operator double()); }
+  FP_IMPURE explicit operator std::string() const noexcept { return (std::stringstream{} << std::fixed << std::setw(3 + total_decimal) << std::setprecision(fract_decimal) << (operator double())).str(); }
 #endif // FP_NOSTR
 };
 
