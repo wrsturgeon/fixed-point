@@ -47,20 +47,21 @@ template <std::unsigned_integral auto B> using u_int = typename u_int_struct<B>:
 template <std::unsigned_integral auto B, valid_sign S> using int_b = std::conditional_t<std::is_signed_v<S>, s_int<B>, u_int<B>>;
 
 // Bit-shifting operators that sidestep undefined behavior with negative shifts
-template <std::integral auto shift_amt, std::integral T>
-FP_PURE T rshift(T&& v) noexcept { if constexpr (shift_amt < 0) { return v << -shift_amt; } else { return v >> shift_amt; } }
-template <std::integral auto shift_amt, std::integral T>
-FP_PURE T lshift(T&& v) noexcept { if constexpr (shift_amt < 0) { return v >> -shift_amt; } else { return v << shift_amt; } }
+template <std::integral auto Amount, std::integral T>
+FP_PURE T rshift(T&& v) noexcept { if constexpr (Amount == 0) { return std::forward<T>(v); } if constexpr (Amount < 0) { return std::forward<T>(v) << -Amount; } return std::forward<T>(v) >> Amount; }
+template <std::integral auto Amount, std::integral T>
+FP_PURE T lshift(T&& v) noexcept { if constexpr (Amount == 0) { return std::forward<T>(v); } if constexpr (Amount < 0) { return std::forward<T>(v) >> -Amount; } return std::forward<T>(v) << Amount; }
 
+// Bad implementation but constexpr. Use only at compile time.
 FP_PURE std::size_t byte_pow2_ceil(std::unsigned_integral auto x) noexcept {
+  static_assert(CHAR_BIT == 8U, "As of now, this fixed-point library requires an 8-bit system byte.");
   std::size_t c = CHAR_BIT;
   while (x > c) { c <<= 1U; }
   return c;
 }
 
-static_assert(byte_pow2_ceil(8U) == 8U, "As of now, this fixed-point library requires an 8-bit system byte.");
-
 template <typename T> using signedness = std::conditional_t<std::is_signed_v<T>, signed, unsigned>;
+template <typename T> using flip_signedness = std::conditional_t<std::is_signed_v<T>, unsigned, signed>;
 
 FP_PURE std::uint8_t dec_capacity(std::uint8_t bin_capacity) noexcept {
   std::size_t const total = (static_cast<std::size_t>(1) << bin_capacity);
@@ -74,13 +75,16 @@ FP_PURE std::uint8_t dec_capacity(std::uint8_t bin_capacity) noexcept {
 
 template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
 struct t {
-  util::int_b<B, S> internal; // NOLINT(misc-non-private-member-variables-in-classes)
-  static constexpr int fractional_bits = B - I - std::is_signed_v<S>;
-  static constexpr std::uint8_t total_decimal = util::dec_capacity(B);
+  static constexpr auto b = B;
+  static constexpr auto i = I;
+  using s = S;
+  util::int_b<b, s> internal; // NOLINT(misc-non-private-member-variables-in-classes)
+  static constexpr int fractional_bits = b - i - std::is_signed_v<s>;
+  static constexpr std::uint8_t total_decimal = util::dec_capacity(b);
   static constexpr std::uint8_t fract_decimal = util::dec_capacity(fractional_bits);
   // no constructor
-  FP_IMPURE explicit operator float() const noexcept requires (static_cast<int>(I) == I) { return std::ldexpf(static_cast<float>(internal), static_cast<int>(-fractional_bits)); }
-  FP_IMPURE explicit operator double() const noexcept requires (static_cast<int>(I) == I) { return std::ldexp(static_cast<double>(internal), static_cast<int>(-fractional_bits)); }
+  FP_IMPURE explicit operator float() const noexcept requires (static_cast<int>(i) == i) { return std::ldexpf(static_cast<float>(internal), static_cast<int>(-fractional_bits)); }
+  FP_IMPURE explicit operator double() const noexcept requires (static_cast<int>(i) == i) { return std::ldexp(static_cast<double>(internal), static_cast<int>(-fractional_bits)); }
 #ifndef FP_NOSTR
   FP_IMPURE explicit operator std::string() const noexcept { return (std::stringstream{} << std::fixed << std::setw(3 + total_decimal) << std::setprecision(fract_decimal) << (operator double())).str(); }
 #endif // FP_NOSTR
@@ -92,76 +96,149 @@ inline constexpr decltype(auto) from_int = t<
   util::byte_pow2_ceil(std::bit_width(std::abs(I))),
   std::conditional_t<(I < 0), signed, unsigned>>{ .internal = I };
 
+namespace util {
+template <typename T> struct is_fixed_point_s { static constexpr bool value = false; };
+template <std::unsigned_integral auto B, std::signed_integral auto I, valid_sign S> struct is_fixed_point_s<t<B, I, S>> { static constexpr bool value = true; };
+} // namespace util
+template <typename T> concept any = util::is_fixed_point_s<std::decay_t<T>>::value;
+
+// Bit-shifting by a known amount (can be negative!). This DOES NOT immediately change anything about the underlying bits; instead, it moves the templated radix point.
+template <std::integral auto Amount, any T>
+FP_PURE static
+t<T::b, T::i + Amount, typename T::s>
+lshift(T&& x)
+noexcept {
+  // https://stackoverflow.com/questions/54709377/how-to-perfect-forward-a-member-variable
+  return t<T::b, T::i + Amount, typename T::s>{ .internal=std::forward<T>(x).internal };
+}
+
+// Bit-shifting by a known amount (can be negative!). This DOES NOT immediately change anything about the underlying bits; instead, it moves the templated radix point.
+template <std::integral auto Amount, any T>
+FP_PURE static
+t<T::b, T::i - Amount, typename T::s>
+rshift(T&& x)
+noexcept {
+  return t<T::b, T::i - Amount, typename T::s>{ .internal=std::forward<T>(x).internal };
+}
+
+// Bit-shifting by an unknown amount. Immediately bit-shifts the underlying representation without changing template parameters.
+template <any T>
+FP_PURE static
+T
+lshift(T&& x, std::unsigned_integral auto z)
+noexcept {
+  return T{ .internal=(std::forward<T>(x).internal << z) };
+}
+
+// Bit-shifting by an unknown amount. Immediately bit-shifts the underlying representation without changing template parameters.
+template <any T>
+FP_PURE static
+T
+rshift(T&& x, std::unsigned_integral auto z)
+noexcept {
+  return T{ .internal=(std::forward<T>(x).internal >> z) };
+}
+
+// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
+template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S, any T>
+FP_PURE static
+t<B, I, S>
+reformat(T&& x)
+noexcept {
+  return t<B, I, S>{ .internal=util::lshift<(B - T::b) + (I - T::i)>(std::forward<T>(x).internal) };
+}
+
+// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
+template <any T_out, any T_in>
+FP_PURE static
+T_out
+reformat(T_in&& x)
+noexcept {
+  return reformat<T_out::b, T_out::i, typename T_out::s>(std::forward<T_in>(x));
+}
+
+// Addition. Always returns the same type as the first argument, adjusting precision of the second to match.
+template <any T1, any T2>
+FP_PURE static
+T1
+operator+(T1&& x, T2&& z)
+noexcept {
+  return T1{ .internal=(std::forward<T1>(x).internal + reformat<T1>(std::forward<T2>(z)).internal) };
+}
+
+// Subtraction. Always returns the same type as the first argument, adjusting precision of the second to match.
+template <any T1, any T2>
+FP_PURE static
+T1
+operator-(T1&& x, T2&& z)
+noexcept {
+  return T1{ .internal=(std::forward<T1>(x).internal - reformat<T1>(std::forward<T2>(z)).internal) };
+}
+
+namespace util {
+template <any T1, any T2> inline constexpr bool both_signed = std::is_signed_v<typename T1::s> and std::is_signed_v<typename T2::s>;
+template <any T1, any T2> inline constexpr bool either_signed = std::is_signed_v<typename T1::s> or std::is_signed_v<typename T2::s>;
+} // namespace util
+
+#define MUL_RETURN_T t<T1::b + T2::b - util::both_signed<T1, T2>, T1::i + T2::i, std::conditional_t<util::either_signed<T1, T2>, signed, unsigned>>
+// Multiplication. Returns neither T1 nor T2; instead, returns exactly enough to prevent overflow (usually the sum of the input bits).
+template <any T1, any T2>
+FP_PURE static
+MUL_RETURN_T
+operator*(T1&& x, T2&& z)
+noexcept {
+  return MUL_RETURN_T{ .internal=(std::forward<T1>(x).internal * std::forward<T2>(z).internal) };
+}
+
+// Euclidean transformation : [-1, 1) <-> [0, 1) in one bitwise XOR
+template <any T>
+requires (T::i == 0)
+FP_PURE static
+t<T::b, 0, util::flip_signedness<typename T::s>>
+rescale(T&& x)
+noexcept {
+  return t<T::b, 0, util::flip_signedness<typename T::s>>{
+    .internal=static_cast<util::int_b<T::b, util::flip_signedness<typename T::s>>>(
+      std::forward<T>(x).internal ^ util::lshift<T::b - 1>(1U)
+    )
+  };
+}
+
 #ifndef FP_NOSTR // String and stream operators
 
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::ostream& operator<<(std::ostream& os, t<B, I, S>&& v) {
-  return os << static_cast<std::string>(v);
+template <any T>
+std::ostream& operator<<(std::ostream& os, T&& v) {
+  return os << (std::forward<T>(v).operator std::string());
 }
 
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::ostream& operator<<(std::ostream& os, t<B, I, S> const& v) {
-  return os << static_cast<std::string>(v);
+template <any T>
+std::string operator+(std::string&& s, T&& v) {
+  return std::move(s) + (std::forward<T>(v).operator std::string());
 }
 
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(std::string&& s, t<B, I, S>&& v) {
-  return s + static_cast<std::string>(v);
+template <any T>
+std::string operator+(std::string const& s, T&& v) {
+  return s + (std::forward<T>(v).operator std::string());
 }
 
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(std::string&& s, t<B, I, S> const& v) {
-  return s + static_cast<std::string>(v);
+template <any T>
+std::string operator+(T&& v, std::string&& s) {
+  return (std::forward<T>(v).operator std::string()) + std::move(s);
 }
 
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(std::string const& s, t<B, I, S>&& v) {
-  return s + static_cast<std::string>(v);
+template <any T>
+std::string operator+(T&& v, std::string const& s) {
+  return (std::forward<T>(v).operator std::string()) + s;
 }
 
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(std::string const& s, t<B, I, S> const& v) {
-  return s + static_cast<std::string>(v);
+template <any T>
+std::string operator+(char const* const s, T&& v) {
+  return s + (std::forward<T>(v).operator std::string());
 }
 
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(t<B, I, S>&& v, std::string&& s) {
-  return static_cast<std::string>(v) + s;
-}
-
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(t<B, I, S>&& v, std::string const& s) {
-  return static_cast<std::string>(v) + s;
-}
-
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(t<B, I, S> const& v, std::string&& s) {
-  return static_cast<std::string>(v) + s;
-}
-
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(t<B, I, S> const& v, std::string const& s) {
-  return static_cast<std::string>(v) + s;
-}
-
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(char const* const s, t<B, I, S>&& v) {
-  return s + static_cast<std::string>(v);
-}
-
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(char const* const s, t<B, I, S> const& v) {
-  return s + static_cast<std::string>(v);
-}
-
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(t<B, I, S>&& v, char const* const s) {
-  return static_cast<std::string>(v) + s;
-}
-
-template <std::unsigned_integral auto B, std::signed_integral auto I, util::valid_sign S>
-std::string operator+(t<B, I, S> const& v, char const* const s) {
-  return static_cast<std::string>(v) + s;
+template <any T>
+std::string operator+(T&& v, char const* const s) {
+  return (std::forward<T>(v).operator std::string()) + s;
 }
 
 #endif // FP_NOSTR
