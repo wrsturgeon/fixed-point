@@ -215,7 +215,11 @@ FP_PURE static
 std::decay_t<T1>
 operator-(T1&& x, T2&& z)
 noexcept {
-  return std::decay_t<T1>{ .internal=(std::forward<T1>(x).internal - reformat<T1>(std::forward<T2>(z)).internal) };
+  return std::decay_t<T1>{
+    .internal=static_cast<typename std::decay_t<T1>::internal_t>(
+      std::forward<T1>(x).internal - reformat<T1>(std::forward<T2>(z)).internal
+    )
+  };
 }
 
 namespace util {
@@ -238,13 +242,16 @@ noexcept {
 }
 #undef MUL_RETURN_T
 
+template <any T> using   make_signed = t<std::decay_t<T>::b + std::is_unsigned_v<typename std::decay_t<T>::s>, std::decay_t<T>::i,   signed>;
+template <any T> using make_unsigned = t<std::decay_t<T>::b - std::  is_signed_v<typename std::decay_t<T>::s>, std::decay_t<T>::i, unsigned>;
+
 // Negation.
 template <any T>
 FP_PURE static
-std::decay_t<T>
+make_signed<T>
 operator-(T&& x)
 noexcept {
-  return std::decay_t<T>{ .internal=-std::forward<T>(x).internal };
+  return make_signed<T>{ .internal=static_cast<typename make_signed<T>::internal_t>(-std::forward<T>(x).internal) };
 }
 
 // Increments ONLY ONE ULP, not by 1.0 each time.
@@ -254,6 +261,14 @@ std::decay_t<T>&
 operator++(T& x)
 noexcept {
   ++x.internal;
+  return x;
+}
+
+template <any T1, any T2>
+FP_INLINE constexpr static
+std::decay_t<T1>&
+operator-=(T1& x, T2&& z) {
+  x.internal -= reformat<T1>(std::forward<T2>(z)).internal;
   return x;
 }
 
