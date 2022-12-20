@@ -238,10 +238,19 @@ noexcept {
 }
 #undef MUL_RETURN_T
 
+// Negation.
+template <any T>
+FP_PURE static
+std::decay_t<T>
+operator-(T&& x)
+noexcept {
+  return std::decay_t<T>{ .internal=-std::forward<T>(x).internal };
+}
+
 // Increments ONLY ONE ULP, not by 1.0 each time.
 template <any T>
 FP_PURE static
-T&
+std::decay_t<T>&
 operator++(T& x)
 noexcept {
   ++x.internal;
