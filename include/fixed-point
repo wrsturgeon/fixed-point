@@ -158,9 +158,11 @@ FP_PURE static
 t<B, I, S>
 reformat(T&& x)
 noexcept {
+  static constexpr auto shift_amt = t<B, I, S>::fractional_bits - std::decay_t<T>::fractional_bits;
+  using pre_shift_t = util::int_b<util::byte_pow2_ceil(((shift_amt > 0) ? shift_amt : 0) + (sizeof(std::decay_t<T>) << 3)), std::conditional_t<std::is_signed_v<T>, signed, unsigned>>;
   return t<B, I, S>{
     .internal=static_cast<typename t<B, I, S>::internal_t>(
-      util::lshift<t<B, I, S>::fractional_bits - std::decay_t<T>::fractional_bits>(std::forward<T>(x).internal)
+      util::lshift<shift_amt>(static_cast<pre_shift_t>(std::forward<T>(x).internal))
     )
   };
 }
