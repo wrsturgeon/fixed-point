@@ -72,7 +72,7 @@ template <typename T> using flip_signedness = std::conditional_t<std::is_signed_
 FP_PURE std::uint8_t dec_capacity(std::uint8_t bin_capacity) noexcept {
   std::size_t const total = (static_cast<std::size_t>(1) << bin_capacity);
   std::uint8_t d = 0;
-  std::size_t exp = 10;
+  std::size_t exp = 1;
   while (total > exp) { ++d; exp *= 10; }
   return d;
 }
@@ -92,20 +92,22 @@ template <typename T> concept any = util::is_fixed_point_s<std::decay_t<T>>::val
 template <util::lg_size_t B, util::lg_ssize_t I, util::valid_sign S>
 struct t {
   static constexpr auto b = B;
+  static constexpr auto b_actual = util::byte_pow2_ceil(b);
   static constexpr auto i = I;
   using s = S;
-  using internal_t = util::int_b<util::byte_pow2_ceil(b), s>;
+  static constexpr bool signedness = std::is_signed_v<s>;
+  using internal_t = util::int_b<b_actual, s>;
   internal_t internal; // NOLINT(misc-non-private-member-variables-in-classes)
-  static constexpr int fractional_bits = b - i - std::is_signed_v<s>;
-  static constexpr std::uint8_t total_decimal = util::dec_capacity(b);
-  static constexpr std::uint8_t fract_decimal = util::dec_capacity(fractional_bits);
+  static constexpr int fractional_bits = b_actual - i - signedness;
+  static constexpr std::uint8_t integral_decimal = std::max(static_cast<std::uint8_t>(1), util::dec_capacity(i));
+  static constexpr std::uint8_t fraction_decimal = std::max(static_cast<std::uint8_t>(1), util::dec_capacity(fractional_bits));
   // no constructor
   template <any T> FP_PURE t<B, I, S>& operator=(T&& z) noexcept;
   template <any T> FP_PURE t<B, I, S>& operator=(T const& z) noexcept;
   FP_IMPURE explicit operator float() const noexcept requires (static_cast<int>(i) == i) { return std::ldexpf(static_cast<float>(internal), static_cast<int>(-fractional_bits)); }
   FP_IMPURE explicit operator double() const noexcept requires (static_cast<int>(i) == i) { return std::ldexp(static_cast<double>(internal), static_cast<int>(-fractional_bits)); }
 #ifndef FP_NOSTR
-  FP_IMPURE explicit operator std::string() const noexcept { return (std::stringstream{} << std::fixed << std::setw(3 + total_decimal) << std::setprecision(fract_decimal) << (operator double())).str(); }
+  FP_IMPURE explicit operator std::string() const noexcept { return (std::stringstream{} << std::fixed << std::setw(signedness + integral_decimal + 1 + fraction_decimal) << std::setprecision(fraction_decimal) << (operator double())).str(); }
 #endif // FP_NOSTR
 };
 
@@ -242,8 +244,8 @@ noexcept {
 }
 #undef MUL_RETURN_T
 
-template <any T> using   make_signed = t<std::decay_t<T>::b + std::is_unsigned_v<typename std::decay_t<T>::s>, std::decay_t<T>::i,   signed>;
-template <any T> using make_unsigned = t<std::decay_t<T>::b - std::  is_signed_v<typename std::decay_t<T>::s>, std::decay_t<T>::i, unsigned>;
+template <any T> using   make_signed = t<std::decay_t<T>::b + std::decay_t<T>::signedness, std::decay_t<T>::i,   signed>;
+template <any T> using make_unsigned = t<std::decay_t<T>::b - std::decay_t<T>::signedness, std::decay_t<T>::i, unsigned>;
 
 // Negation.
 template <any T>
@@ -260,7 +262,7 @@ FP_PURE static
 std::decay_t<T>&
 operator++(T& x)
 noexcept {
-  ++x.internal;
+  ++x.internal << (std::decay_t<T>::b_actual - std::decay_t<T>::b); // Rely on stated bits, not actual bits
   return x;
 }
 
@@ -280,8 +282,8 @@ t<std::decay_t<T>::b, 0, util::flip_signedness<typename std::decay_t<T>::s>>
 rescale(T&& x)
 noexcept {
   return t<std::decay_t<T>::b, 0, util::flip_signedness<typename std::decay_t<T>::s>>{
-    .internal=static_cast<util::int_b<std::decay_t<T>::b, util::flip_signedness<typename std::decay_t<T>::s>>>(
-      std::forward<T>(x).internal ^ util::lshift<std::decay_t<T>::b - 1>(1U)
+    .internal=static_cast<util::int_b<std::decay_t<T>::b_actual, util::flip_signedness<typename std::decay_t<T>::s>>>(
+      std::forward<T>(x).internal ^ util::lshift<std::decay_t<T>::b_actual - 1>(1U)
     )
   };
 }
