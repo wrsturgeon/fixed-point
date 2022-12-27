@@ -37,7 +37,7 @@ namespace util {
 
 // cstdint types with templated bit width
 template <std::size_t B> struct s_int_struct {};
-template <std::size_t I> struct u_int_struct {};
+template <std::size_t B> struct u_int_struct {};
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define MAKEINT(B) template <> struct s_int_struct<B##U> { using type = std::int##B##_t; }; template <> struct u_int_struct<B##U> { using type = std::uint##B##_t; };
 MAKEINT(8)
@@ -115,8 +115,8 @@ noexcept {
   }
 }
 
-template <typename T> using signedness = std::conditional_t<std::is_signed_v<T>, signed, unsigned>;
-template <typename T> using flip_signedness = std::conditional_t<std::is_signed_v<T>, unsigned, signed>;
+template <typename T> using      signedness = std::conditional_t<std::is_signed_v<typename std::decay_t<T>::s>, signed, unsigned>;
+template <typename T> using flip_signedness = std::conditional_t<std::is_signed_v<typename std::decay_t<T>::s>, unsigned, signed>;
 
 FP_PURE std::uint8_t dec_capacity(std::uint8_t bin_capacity) noexcept {
   std::size_t const total = (static_cast<std::size_t>(1) << bin_capacity);
@@ -154,15 +154,15 @@ noexcept {
 
 } // namespace util
 
-template <util::lg_size_t B, util::lg_ssize_t I, util::valid_sign S, bool const_ref> struct fmt;
+template <util::lg_size_t B, util::valid_sign S, util::lg_ssize_t R, bool const_ref> struct fmt;
 
 namespace util {
 template <typename T> struct is_format_s { static constexpr bool value = false; };
-template <util::lg_size_t B, util::lg_ssize_t I, util::valid_sign S, bool C> struct is_format_s<fmt<B, I, S, C>> { static constexpr bool value = true; };
+template <util::lg_size_t B, util::valid_sign S, util::lg_ssize_t R, bool C> struct is_format_s<fmt<B, S, R, C>> { static constexpr bool value = true; };
 template <typename T> struct format_const_s;
 template <typename T> struct format_non_const_s;
-template <util::lg_size_t B, util::lg_ssize_t I, util::valid_sign S, bool C> struct format_const_s<fmt<B, I, S, C>> { using type = fmt<B, I, S, true>; };
-template <util::lg_size_t B, util::lg_ssize_t I, util::valid_sign S, bool C> struct format_non_const_s<fmt<B, I, S, C>> { using type = fmt<B, I, S, false>; };
+template <util::lg_size_t B, util::valid_sign S, util::lg_ssize_t R, bool C> struct format_const_s<fmt<B, S, R, C>> { using type = fmt<B, S, R, true>; };
+template <util::lg_size_t B, util::valid_sign S, util::lg_ssize_t R, bool C> struct format_non_const_s<fmt<B, S, R, C>> { using type = fmt<B, S, R, false>; };
 template <typename T> using format_const = typename util::format_const_s<::std::decay_t<T>>::type;
 template <typename T> using format_non_const = typename util::format_non_const_s<::std::decay_t<T>>::type;
 } // namespace util
@@ -170,23 +170,24 @@ template <typename T> concept format = util::is_format_s<::std::decay_t<T>>::val
 
 template <format F, std::size_t... N> struct t;
 
-template <util::lg_size_t B, util::lg_ssize_t I = 0, util::valid_sign S = signed, bool const_ref = false>
+template <util::lg_size_t B, util::valid_sign S = signed, util::lg_ssize_t R = B - std::is_signed_v<S>, bool const_ref = false>
 struct fmt {
-  using self_t = fmt<B, I, S, const_ref>;
+  using self_t = fmt<B, S, R, const_ref>;
   static constexpr util::lg_size_t b = B;
   static_assert(b <= max_bits);
   static constexpr util::lg_size_t b_actual = util::byte_pow2_ceil<b>;
-  static constexpr util::lg_ssize_t i = I;
+  static constexpr util::lg_ssize_t r = R;
   using s = S;
   static constexpr bool c = const_ref;
-  static constexpr bool signedness = std::is_signed_v<s>;
+  static constexpr bool sign_bits = std::is_signed_v<s>;
   using internal_t = util::int_b<b_actual, s>;
   using internal_maybe_const_t = std::conditional_t<const_ref, internal_t const, internal_t>;
   internal_maybe_const_t& internal; // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
-  static constexpr util::lg_ssize_t fractional_bits = b - i - signedness;
-  static constexpr std::uint8_t integral_decimal = util::dec_capacity((              i > 1) ?               i : 1);
+  static constexpr util::lg_ssize_t fractional_bits = r;
+  static constexpr util::lg_ssize_t integral_bits = b - fractional_bits - sign_bits;
+  static constexpr std::uint8_t integral_decimal = util::dec_capacity((  integral_bits > 1) ?   integral_bits : 1);
   static constexpr std::uint8_t fraction_decimal = util::dec_capacity((fractional_bits > 1) ? fractional_bits : 1);
-  FP_INLINE constexpr fmt(internal_maybe_const_t& x) noexcept : internal{x} {}
+  FP_INLINE constexpr explicit fmt(internal_maybe_const_t& x) noexcept : internal{x} {}
   FP_INLINE constexpr fmt(self_t const&) noexcept = default;
   FP_INLINE constexpr fmt(self_t&&) noexcept = default;
   FP_INLINE constexpr self_t& operator= (  self_t  const& x) noexcept requires (not const_ref) { internal  =           x .internal; return *this; }
@@ -204,14 +205,16 @@ struct fmt {
   template <format F> requires (not std::same_as<F, self_t>) FP_INLINE constexpr self_t& operator=(F        && x) noexcept requires (not const_ref) { return this->operator=(reformat<self_t>(std::forward<F>(x))); }
   template <format F> requires (not std::same_as<F, self_t>) FP_INLINE constexpr self_t& operator=(t<F> const& x) noexcept requires (not const_ref) { return this->operator=(          x .get_unrolled(0U)); }
   template <format F> requires (not std::same_as<F, self_t>) FP_INLINE constexpr self_t& operator=(t<F>     && x) noexcept requires (not const_ref) { return this->operator=(std::move(x).get_unrolled(0U)); }
-  FP_IMPURE explicit operator float() const noexcept requires (static_cast<int>(i) == i) { return std::ldexpf(static_cast<float>(internal), static_cast<int>(-fractional_bits)); }
-  FP_IMPURE explicit operator double() const noexcept requires (static_cast<int>(i) == i) { return std::ldexp(static_cast<double>(internal), static_cast<int>(-fractional_bits)); }
+  FP_IMPURE explicit operator float() const noexcept requires (static_cast<int>(r) == r) { return std::ldexpf(static_cast<float>(internal), static_cast<int>(-r)); }
+  FP_IMPURE explicit operator double() const noexcept requires (static_cast<int>(r) == r) { return std::ldexp(static_cast<double>(internal), static_cast<int>(-r)); }
 #ifndef FP_NOSTR
-  FP_IMPURE explicit operator std::string() const noexcept { return (std::stringstream{} << std::fixed << std::setw(signedness + integral_decimal + 1 + fraction_decimal) << std::setprecision(fraction_decimal) << (operator double())).str(); }
+  FP_IMPURE explicit operator std::string() const noexcept { return (std::stringstream{} << std::fixed << std::setw(sign_bits + integral_decimal + 1 + fraction_decimal) << std::setprecision(fraction_decimal) << (operator double())).str(); }
 #endif // FP_NOSTR
 };
 
 namespace util {
+template <format F> using   make_signed = fmt<(std::decay_t<F>::b < max_bits) ? std::decay_t<F>::b + not std::decay_t<F>::sign_bits : max_bits,   signed, std::decay_t<F>::r, std::decay_t<F>::c>;
+template <format F> using make_unsigned = fmt<                                  std::decay_t<F>::b -     std::decay_t<F>::sign_bits           , unsigned, std::decay_t<F>::r, std::decay_t<F>::c>;
 template <typename T> struct is_fixed_point_s { static constexpr bool value = false; };
 template <format F, std::size_t... N> struct is_fixed_point_s<t<F, N...>> { static constexpr bool value = true; };
 } // namespace util
@@ -233,11 +236,12 @@ struct t {
   using f = std::decay_t<F>;
   static constexpr auto b = f::b;
   static constexpr auto b_actual = f::b_actual;
-  static constexpr auto i = f::i;
+  static constexpr auto r = f::r;
   using s = typename f::s;
   static constexpr auto c = f::c;
-  static constexpr auto signedness = f::signedness;
+  static constexpr auto sign_bits = f::sign_bits;
   static constexpr auto fractional_bits = f::fractional_bits;
+  static constexpr auto integral_bits = f::integral_bits;
   static constexpr auto integral_decimal = f::integral_decimal;
   static constexpr auto fraction_decimal = f::fraction_decimal;
   using data_t = typename f::internal_t;
@@ -249,8 +253,8 @@ struct t {
 // Member variable
   std::array<data_t, size> data; // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
 // Multi-element constructors
-  template <     any... T> requires ((sizeof...(T) >     1) and (size == util::sum_of_sizes<T...>             )) FP_INLINE constexpr t(T&&... z) noexcept : data{                    std::forward<T>(z).data...} {}
-  template <typename... T> requires ((sizeof...(T) == size) and (std::same_as<std::decay_t<T>, data_t> and ...)) FP_INLINE constexpr t(T&&... z) noexcept : data{static_cast<data_t>(std::forward<T>(z)    )...} {}
+  template <     any... T> requires ((sizeof...(T) >     1) and (             std::decay_t<T>::trivial and ...)) FP_INLINE constexpr t(T&&... z) noexcept : data{                    std::forward<T>(z).data[0]...} {}
+  template <typename... T> requires ((sizeof...(T) == size) and (std::same_as<std::decay_t<T>, data_t> and ...)) FP_INLINE constexpr t(T&&... z) noexcept : data{static_cast<data_t>(std::forward<T>(z)       )...} {}
   FP_INLINE constexpr t(std::array<data_t, size> const& internal_array) noexcept : data{          internal_array } {}
   FP_INLINE constexpr t(std::array<data_t, size>     && internal_array) noexcept : data{std::move(internal_array)} {}
 // Constructors
@@ -271,10 +275,10 @@ struct t {
   template <any    T2> FP_INLINE constexpr self_t& operator=(T2&& x) noexcept { return operator=(reformat<F>(std::forward<T2>(x))); }
   template <format F2> FP_INLINE constexpr self_t& operator=(F2&& x) noexcept { return operator=(reformat<F>(std::forward<F2>(x))); }
 // Indexing
-  template <typename    T> requires                              std::unsigned_integral<std::decay_t<T>>           FP_PURE util::format_non_const<f> get_unrolled(T&&    index  )       noexcept { assert(index < size); return {data[index]}; }
-  template <typename    T> requires                              std::unsigned_integral<std::decay_t<T>>           FP_PURE util::format_const<    f> get_unrolled(T&&    index  ) const noexcept { assert(index < size); return {data[index]}; }
+  template <typename    T> requires                              std::unsigned_integral<std::decay_t<T>>           FP_PURE util::format_non_const<f> get_unrolled(T&&    index  )       noexcept { assert(index < size); return util::format_non_const<f>{data[index]}; }
+  template <typename    T> requires                              std::unsigned_integral<std::decay_t<T>>           FP_PURE util::format_const    <f> get_unrolled(T&&    index  ) const noexcept { assert(index < size); return util::format_const    <f>{data[index]}; }
   template <typename... T> requires ((sizeof...(T) == ndim) and (std::unsigned_integral<std::decay_t<T>> and ...)) FP_PURE util::format_non_const<f> operator[]  (T&&... indices)       noexcept { return get_unrolled(util::index<ndim, shape>(std::forward<T>(indices)...)); }
-  template <typename... T> requires ((sizeof...(T) == ndim) and (std::unsigned_integral<std::decay_t<T>> and ...)) FP_PURE util::format_const<    f> operator[]  (T&&... indices) const noexcept { return get_unrolled(util::index<ndim, shape>(std::forward<T>(indices)...)); }
+  template <typename... T> requires ((sizeof...(T) == ndim) and (std::unsigned_integral<std::decay_t<T>> and ...)) FP_PURE util::format_const    <f> operator[]  (T&&... indices) const noexcept { return get_unrolled(util::index<ndim, shape>(std::forward<T>(indices)...)); }
 // Broadcasting
   // template <any T> requires (std::decay_t<T>::size == size) FP_PURE operator T() const noexcept { return std::decay_t<T>{*this}; }
 };
@@ -282,9 +286,63 @@ struct t {
 template <util::lg_ssize_t I>
 inline constexpr t<fmt<
   std::bit_width(static_cast<std::size_t>((I < 0) ? -I : I)) + (I < 0),
-  std::bit_width(static_cast<std::size_t>((I < 0) ? -I : I)),
-  std::conditional_t<(I < 0), signed, unsigned>>>
+  std::conditional_t<(I < 0), signed, unsigned>, 0>>
 from_int = {I};
+
+
+
+// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
+template <format F1, format F2>
+FP_PURE static
+t<std::decay_t<F1>>
+reformat(F2&& x)
+noexcept {
+  using f1 = std::decay_t<F1>;
+  using f2 = std::decay_t<F2>;
+  using pre_shift_t = util::int_b<util::byte_pow2_ceil<(f2::b > f1::b) ? f2::b : f1::b>, typename f2::s>;
+  return static_cast<typename f1::internal_t>(util::lshift<f1::r - f2::r>(static_cast<pre_shift_t>(std::forward<f2>(x).internal)));
+}
+
+// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
+template <util::lg_size_t B, util::valid_sign S = signed, util::lg_ssize_t R = B - std::is_signed_v<S>, bool C = false, format F>
+FP_PURE static
+t<fmt<B, S, R, C>>
+reformat(F&& x)
+noexcept {
+  return reformat<fmt<B, S, R, C>>(std::forward<F>(x));
+}
+
+// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
+template <format F, any T>
+FP_PURE static
+with_format<F, T>
+reformat(T&& x)
+noexcept {
+  with_format<F, T> y;
+  for (std::size_t i = 0; i < std::decay_t<T>::size; ++i) {
+    y.get_unrolled(i) = reformat<F>(std::forward<T>(x).get_unrolled(i));
+  }
+  return y;
+}
+
+// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
+template <util::lg_size_t B, util::valid_sign S = signed, util::lg_ssize_t R = B - std::is_signed_v<S>, bool C = false, any T>
+FP_PURE static
+with_format<fmt<B, S, R, C>, T>
+reformat(T&& x)
+noexcept {
+  return reformat<fmt<B, S, R, C>>(std::forward<T>(x));
+}
+
+// // Reformat an argument to take up at most half the maximum number of bits (to multiply safely with another half-max number)
+// template <typename T>
+// FP_PURE static
+// decltype(auto)
+// mul_safe(T&& x)
+// noexcept {
+//   static constexpr auto b = (half_bits < std::decay_t<T>::b) ? half_bits : std::decay_t<T>::b;
+//   return reformat<fmt<b, typename std::decay_t<T>::s, std::decay_t<T>::r - (std::decay_t<T>::b - b)>>(std::forward<T>(x));
+// }
 
 
 
@@ -293,20 +351,20 @@ from_int = {I};
 // Bit-shifting by a known amount (can be negative!). This DOES NOT immediately change anything about the underlying bits; instead, it moves the templated radix point.
 template <util::lg_ssize_t Amount, format F>
 FP_PURE static
-t<fmt<std::decay_t<F>::b, std::decay_t<F>::i + Amount, typename std::decay_t<F>::s>>
+t<fmt<std::decay_t<F>::b, typename std::decay_t<F>::s, std::decay_t<F>::r - Amount>>
 lshift(F&& x)
 noexcept {
   // https://stackoverflow.com/questions/54709377/how-to-perfect-forward-a-member-variable
-  return t<fmt<std::decay_t<F>::b, std::decay_t<F>::i + Amount, typename std::decay_t<F>::s>>{std::forward<F>(x).internal};
+  return t<fmt<std::decay_t<F>::b, typename std::decay_t<F>::s, std::decay_t<F>::r - Amount>>{std::forward<F>(x).internal};
 }
 
 // Bit-shifting by a known amount (can be negative!). This DOES NOT immediately change anything about the underlying bits; instead, it moves the templated radix point.
 template <util::lg_ssize_t Amount, format F>
 FP_PURE static
-t<fmt<std::decay_t<F>::b, std::decay_t<F>::i - Amount, typename std::decay_t<F>::s>>
+t<fmt<std::decay_t<F>::b, typename std::decay_t<F>::s, std::decay_t<F>::r + Amount>>
 rshift(F&& x)
 noexcept {
-  return t<fmt<std::decay_t<F>::b, std::decay_t<F>::i - Amount, typename std::decay_t<F>::s>>{std::forward<F>(x).internal};
+  return t<fmt<std::decay_t<F>::b, typename std::decay_t<F>::s, std::decay_t<F>::r + Amount>>{std::forward<F>(x).internal};
 }
 
 // Bit-shifting by an unknown amount. Immediately bit-shifts the underlying representation without changing template parameters.
@@ -333,7 +391,6 @@ FP_PURE static
 t<std::decay_t<F1>>
 operator+(F1&& x, F2&& z)
 noexcept {
-  static_assert(decltype(reformat<F1>(std::forward<F2>(z)))::size == 1);
   return t<std::decay_t<F1>>{
     static_cast<typename std::decay_t<F1>::internal_t>(
       std::forward<F1>(x).internal + reformat<F1>(std::forward<F2>(z)).data[0]
@@ -362,36 +419,57 @@ template <typename F1, typename F2> requires requires { typename std::decay_t<F1
 } // namespace util
 
 
-#define MUL_RETURN_B (std::decay_t<T1>::b + std::decay_t<T2>::b - util::both_signed<std::decay_t<T1>, std::decay_t<T2>>)
-#define MUL_RETURN_F                                     \
-fmt<(MUL_RETURN_B > max_bits) ? max_bits : MUL_RETURN_B, \
-    std::decay_t<T1>::i + std::decay_t<T2>::i,           \
-    util::either_signed_t<T1, T2>>
 // Multiplication. Returns neither T1 nor T2; instead, returns exactly enough to prevent overflow (usually the sum of the input bits).
 template <format T1, format T2>
 FP_PURE static
-t<MUL_RETURN_F>
+decltype(auto)
 operator*(T1&& x, T2&& z)
 noexcept {
-  return t<MUL_RETURN_F>{[&] -> typename MUL_RETURN_F::internal_t {
-    if constexpr (MUL_RETURN_B > max_bits) {
-      return mul_safe(std::forward<T1>(x)).data[0] * mul_safe(std::forward<T2>(z)).data[0];
+  using t1 = std::decay_t<T1>;
+  using t2 = std::decay_t<T2>;
+  static constexpr bool both_signed = util::both_signed<t1, t2>;
+  static constexpr util::lg_size_t return_b = t1::b + t2::b - both_signed;
+  if constexpr (return_b > max_bits) {
+    static constexpr util::lg_size_t shift = return_b - max_bits;
+    if constexpr (t2::b < half_bits) {
+      static_assert(decltype(operator*(reformat<t1::b - shift, typename t1::s, t1::r - shift>(std::forward<T1>(x)), std::forward<T2>(z)))::b == max_bits);
+      return operator*(reformat<t1::b - shift, typename t1::s, t1::r - shift>(std::forward<T1>(x)), std::forward<T2>(z));
+    } else if constexpr (t1::b < half_bits) {
+      static_assert(decltype(operator*(reformat<t2::b - shift, typename t2::s, t2::r - shift>(std::forward<T2>(z)), std::forward<T1>(x)))::b == max_bits);
+      return operator*(reformat<t2::b - shift, typename t2::s, t2::r - shift>(std::forward<T2>(z)), std::forward<T1>(x));
     } else {
-      return          std::forward<T1>(x) .data[0] *          std::forward<T2>(z) .data[0];
+      static constexpr util::lg_size_t t1b = half_bits + both_signed;
+      static constexpr util::lg_size_t t2b = half_bits;
+      static constexpr auto shift1 = t1::b - t1b;
+      static constexpr auto shift2 = t2::b - t2b;
+      return operator*(reformat<t1b, typename t1::s, t1::r - shift1>(std::forward<T1>(x)), reformat<t2b, typename t2::s, t2::r - shift2>(std::forward<T2>(z)));
     }
-  }()};
+  } else {
+    // if constexpr (std::same_as<t1, fp::fmt<8, signed, 0, false>> and std::same_as<t2, fp::fmt<32, signed, 16, false>>) {
+    //   std::cout << "MULTIPLY: " << x << " * " << z << " = " << mul_safe(x) << ".data[0] * " << mul_safe(z) << ".data[0] = " << mul_safe(x).data[0] << " * " << mul_safe(z).data[0] << " = " << (mul_safe(std::forward<T1>(x)).data[0] * mul_safe(std::forward<T2>(z)).data[0]) << '\n';
+    // }
+    return t<fmt<return_b, util::either_signed_t<T1, T2>, std::decay_t<T1>::r + std::decay_t<T2>::r>>{
+      std::forward<T1>(x).internal * std::forward<T2>(z).internal
+    };
+  }
 }
-
-template <format F> using   make_signed = fmt<std::decay_t<F>::b/* + std::decay_t<F>::signedness*/, std::decay_t<F>::i,   signed>;
-template <format F> using make_unsigned = fmt<std::decay_t<F>::b/* - std::decay_t<F>::signedness*/, std::decay_t<F>::i, unsigned>;
 
 // Negation.
 template <format F>
 FP_PURE static
-t<make_signed<F>>
+t<util::make_signed<F>>
 operator-(F&& x)
 noexcept {
-  return t<make_signed<F>>{static_cast<typename make_signed<F>::internal_t>(-std::forward<F>(x).internal)};
+  if constexpr ((not std::decay_t<F>::sign_bits) and (std::decay_t<F>::b == max_bits)) { assert(0 == (x.internal & (1U << (max_bits - 1)))); }
+  return t<util::make_signed<F>>{static_cast<typename util::make_signed<F>::internal_t>(-std::forward<F>(x).internal)};
+}
+
+template <format F>
+FP_PURE static
+t<std::decay_t<F>>
+operator<<(F&& x, std::unsigned_integral auto z)
+noexcept {
+  return t<std::decay_t<F>>{x.internal << z};
 }
 
 // Increments ONLY ONE ULP, not by 1.0 each time.
@@ -422,13 +500,13 @@ operator-=(F1&& x, F2&& z) {
 
 // Euclidean transformation : [-1, 1) <-> [0, 1) in one bitwise XOR
 template <format F>
-requires (std::decay_t<F>::i == 0)
+requires (std::decay_t<F>::r == std::decay_t<F>::b - std::decay_t<F>::sign_bits)
 FP_PURE static
-t<fmt<std::decay_t<F>::b, 0, util::flip_signedness<typename std::decay_t<F>::s>>>
+t<fmt<std::decay_t<F>::b, util::flip_signedness<F>, std::decay_t<F>::b + (std::decay_t<F>::sign_bits ? 1 : -1)>>
 rescale(F&& x)
 noexcept {
-  return t<fmt<std::decay_t<F>::b, 0, util::flip_signedness<typename std::decay_t<F>::s>>>{
-    static_cast<util::int_b<std::decay_t<F>::b_actual, util::flip_signedness<typename std::decay_t<F>::s>>>(
+  return t<fmt<std::decay_t<F>::b, util::flip_signedness<F>, std::decay_t<F>::b + (std::decay_t<F>::sign_bits ? 1 : -1)>>{
+    static_cast<util::int_b<std::decay_t<F>::b_actual, util::flip_signedness<F>>>(
       std::forward<F>(x).internal ^ util::lshift<std::decay_t<F>::b_actual - 1>(1U)
     )
   };
@@ -477,68 +555,12 @@ std::string operator+(F&& v, char const* const s) {
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Ops on fp::t / tensors
 
-// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
-template <format F1, format F2>
-FP_PURE static
-t<std::decay_t<F1>>
-reformat(F2&& x)
-noexcept {
-  using f1 = std::decay_t<F1>;
-  using f2 = std::decay_t<F2>;
-  static constexpr util::lg_ssize_t shift_amt = f1::fractional_bits - f2::fractional_bits;
-  // static_assert(util::shift_not_absurd<shift_amt, typename f1::internal_t>);
-  using pre_shift_t = std::conditional_t<util::shift_not_absurd<shift_amt, typename f2::internal_t>,
-    typename f2::internal_t,
-    util::int_b<util::byte_pow2_ceil<((shift_amt < 0) ? -shift_amt : shift_amt) + 1>, typename f2::s>>;
-  return static_cast<typename f1::internal_t>(util::lshift<shift_amt>(static_cast<pre_shift_t>(std::forward<f2>(x).internal)));
-}
-
-// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
-template <util::lg_size_t B, util::lg_ssize_t I = 0, util::valid_sign S = signed, bool C = false, format F>
-FP_PURE static
-t<fmt<B, I, S, C>>
-reformat(F&& x)
-noexcept {
-  return reformat<fmt<B, I, S, C>>(std::forward<F>(x));
-}
-
-// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
-template <format F, any T>
-FP_PURE static
-with_format<F, T>
-reformat(T&& x)
-noexcept {
-  with_format<F, T> y;
-  for (std::size_t i = 0; i < std::decay_t<T>::size; ++i) {
-    y.get_unrolled(i) = reformat<F>(std::forward<T>(x).get_unrolled(i));
-  }
-  return y;
-}
-
-// Reformat an argument to take the same value (save for precision & overflow) in a different underlying format.
-template <util::lg_size_t B, util::lg_ssize_t I = 0, util::valid_sign S = signed, bool C = false, any T>
-FP_PURE static
-with_format<fmt<B, I, S, C>, T>
-reformat(T&& x)
-noexcept {
-  return reformat<fmt<B, I, S, C>>(std::forward<T>(x));
-}
-
-// Reformat an argument to take up at most half the maximum number of bits (to multiply safely with another half-max number)
-template <typename T>
-FP_PURE static
-decltype(auto)
-mul_safe(T&& x)
-noexcept {
-  return reformat<fmt<(half_bits < std::decay_t<T>::b) ? half_bits : std::decay_t<T>::b, std::decay_t<T>::i, typename std::decay_t<T>::s>>(std::forward<T>(x));
-}
-
 template <any T1, format T2>
 FP_PURE static
-with_format<MUL_RETURN_F, T1>
+decltype(auto)
 operator*(T1&& x, T2&& z)
 noexcept {
-  with_format<MUL_RETURN_F, T1> y;
+  with_format<typename decltype(std::declval<typename std::decay_t<T1>::f>() * z)::f, T1> y;
   #pragma unroll
   for (std::size_t i = 0; i < std::decay_t<T1>::size; ++i) {
     y.get_unrolled(i) = x.get_unrolled(i) * z;
@@ -548,9 +570,7 @@ noexcept {
 /* Commutative */ template <any T, format F> FP_PURE static decltype(auto) operator*(F&& z, T&& x) noexcept { return std::forward<T>(x) * std::forward<F>(z); }
 /* One-element */ template <any T1, any T2> requires (/* below to prevent ambiguity */   std::decay_t<T2>::size ==                      1 ) FP_PURE static decltype(auto) operator*(T1&& x, T2&& z) noexcept { return std::forward<T1>(x) * std::forward<T2>(z).get_unrolled(0U); }
 /* Commutative */ template <any T1, any T2> requires ((std::decay_t<T1>::size != 1) and (std::decay_t<T2>::size ==                      1)) FP_PURE static decltype(auto) operator*(T2&& z, T1&& x) noexcept { return std::forward<T1>(x) * std::forward<T2>(z).get_unrolled(0U); }
-/* Equal sizes */ template <any T1, any T2> requires ((std::decay_t<T1>::size != 1) and (std::decay_t<T2>::size == std::decay_t<T1>::size)) FP_PURE static decltype(auto) operator*(T1&& x, T2&& z) noexcept { with_format<MUL_RETURN_F, T1> y; for (std::size_t i = 0; i < std::decay_t<T1>::size; ++i) { y.get_unrolled(i) = std::forward<T1>(x).get_unrolled(i) * std::forward<T2>(z).get_unrolled(i); } return y; }
-#undef MUL_RETURN_F
-#undef MUL_RETURN_B
+/* Equal sizes */ template <any T1, any T2> requires ((std::decay_t<T1>::size != 1) and (std::decay_t<T2>::size == std::decay_t<T1>::size)) FP_PURE static decltype(auto) operator*(T1&& x, T2&& z) noexcept { with_format<typename decltype(std::declval<typename std::decay_t<T1>::f>() * std::declval<typename std::decay_t<T2>::f>())::f, T1> y; for (std::size_t i = 0; i < std::decay_t<T1>::size; ++i) { y.get_unrolled(i) = std::forward<T1>(x).get_unrolled(i) * std::forward<T2>(z).get_unrolled(i); } return y; }
 
 template <any T, format F>
 FP_PURE static
@@ -572,13 +592,15 @@ noexcept {
 template <any T, format F>
 FP_INLINE constexpr static
 std::decay_t<T>&
-operator+=(T& x, F&& z) {
+operator+=(T& x, F&& z)
+noexcept {
   for (std::size_t i = 0; i < std::decay_t<T>::size; ++i) {
     x.get_unrolled(i) += reformat<typename std::decay_t<T>::f>(std::forward<F>(z)).data[0];
   }
   return x;
 }
-/* Commutative */ template <any T, format F> requires ((std::decay_t<T>::size == 1) and not std::same_as<F, typename std::decay_t<T>::f>) FP_INLINE constexpr static std::decay_t<F>/*&*/ operator+=(F&& x, T&& z) { return std::forward<F>(x) += reformat<F>(std::forward<T>(z)); }
+/* Commutative */ template <any T, format F> requires (std::decay_t<T>::size == 1) FP_INLINE constexpr static std::decay_t<F>/*&*/ operator+=(F&& x, T&& z) noexcept { return operator+=(std::forward<F>(x), reformat<F>(std::forward<T>(z))); }
+/* One-element */ template <any T1, any T2> requires ((std::decay_t<T1>::size == 1) and (std::decay_t<T2>::size == 1)) FP_INLINE constexpr static std::decay_t<T1>& operator+=(T1& x, T2&& z) noexcept { return x += std::forward<T2>(z).get_unrolled(0U); }
 
 template <any T, format F>
 FP_PURE static
@@ -606,9 +628,8 @@ operator-=(T&& x, F&& z) {
   }
   return std::forward<T>(x);
 }
-/* Commutative */ template <any T, format F> requires (std::decay_t<T>::size == 1) FP_INLINE constexpr static std::decay_t<F>/*&*/ operator-=(F&& x, T&& z) { return std::forward<F>(x) -= reformat<F>(std::forward<T>(z)); }
-/* One-element */ template <any T1, any T2> requires ( std::decay_t<T2>::size == 1   /* below to prevent ambiguity */) FP_INLINE constexpr static decltype(auto) operator-=(T1&& x, T2&& z) noexcept { return x -= z.get_unrolled(0U); }
-// /* Commutative */ template <any T1, any T2> requires ((std::decay_t<T2>::size == 1) and (std::decay_t<T1>::size != 1)) FP_INLINE constexpr static decltype(auto) operator-=(T1&& z, T2&& x) noexcept { return z.get_unrolled(0U) -= x; }
+/* Commutative */ template <any T, format F> requires (std::decay_t<T>::size == 1) FP_INLINE constexpr static std::decay_t<F>/*&*/ operator-=(F&& x, T&& z) { return operator-=(std::forward<F>(x), reformat<F>(std::forward<T>(z))); }
+/* One-element */ template <any T1, any T2> requires ( std::decay_t<T2>::size == 1   /* below to prevent ambiguity */) FP_INLINE constexpr static decltype(auto) operator-=(T1&& x, T2&& z) noexcept { return operator-=(x, z.get_unrolled(0U)); }
 /* Equal sizes */ template <any T1, any T2> requires ((std::decay_t<T1>::size != 1) and (std::decay_t<T2>::size == std::decay_t<T1>::size)) FP_INLINE static std::decay_t<T1>& operator-=(T1& x, T2&& z) noexcept { for (std::size_t i = 0; i < std::decay_t<T1>::size; ++i) { x.get_unrolled(i) -= std::forward<T2>(z).get_unrolled(i); } return x; }
 
 #ifndef FP_NOSTR
@@ -646,6 +667,15 @@ std::string operator+(char const* const s, T&& v) {
 template <any T> requires (std::decay_t<T>::size == 1)
 std::string operator+(T&& v, char const* const s) {
   return std::forward<T>(v).get_unrolled(0U) + s;
+}
+
+template <any T> requires (std::decay_t<T>::size > 1)
+std::ostream& operator<<(std::ostream& os, T&& v) {
+  os << '(' << std::forward<T>(v).get_unrolled(0U);
+  for (std::size_t i = 1; i < std::decay_t<T>::size; ++i) {
+    os << ' ' << std::forward<T>(v).get_unrolled(i);
+  }
+  return os << ')';
 }
 
 #endif // FP_NOSTR
